@@ -67,4 +67,5 @@ void loop() {
     }
      
   }
+  //veranderd
 }
