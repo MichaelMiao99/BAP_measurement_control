@@ -65,7 +65,7 @@ void loop() {
       Wire.endTransmission();
       delay(1000);
     }
-    
+     
   }
-  
+  // martijn je kan niks
 }
