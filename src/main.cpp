@@ -67,5 +67,5 @@ void loop() {
     }
      
   }
-  //veranderd2hjljhl
+  //veranderd2
 }
