@@ -67,5 +67,4 @@ void loop() {
     }
      
   }
-  // martijn je kan niks
 }
