@@ -81,11 +81,12 @@ float checkEnergy(){
 }
 
 void shortPSM(){
-    float previousEnergy, currentEnergy,sleepDuration;
+    float previousEnergy, currentEnergy;
+    int sleepDuration;
     currentEnergy = checkEnergy();
     if (currentEnergy < threshold_SPSM)
     {
-        sleepDuration = 300000
+        sleepDuration = 300000;
         LowPower.deepSleep(sleepDuration); //sleep for 5 minutes
         previousEnergy = currentEnergy;
         currentEnergy = checkEnergy();
@@ -95,12 +96,12 @@ void shortPSM(){
             float slope;
             slope = (currentEnergy - previousEnergy)/sleepDuration;
             sleepDuration = (threshold_SPSM-currentEnergy)/slope;
-            if(sleepDuration<(minute))
+            if(sleepDuration<(minute)) // if calculated sleepduration is shorter than a minute, sleep for a minute
             {
-                sleepDurtation = minute;
+                sleepDuration = minute;
                        
             }
-            else if(sleepDuration > 15*minute)
+            else if(sleepDuration > 15*minute) // if calculated sleepduration is larger than 15 minute, sleep for 15 minutes
             {
                 sleepDuration = 15*minute;
             }
