@@ -22,35 +22,36 @@ const float threshold_SPSM = 3;
 const float threshold_LPSM = 2;
 const float threshold_CM = 1;
 const int sensorCount = 5;
-const float maxTempSlope = 8;
+const float maxTempSlope = 8/3600000;
 const float criticalTemp = 0.5;
 const int minute = 60000;
-
-
+const int offSeasonIterations = 5;
+const int offSeasonSleepDuration = 60 * minute;
+const int timeUntilReceive = 3000;
+float tempTemperatures[sensorCount];
 bool offSeason;
-float temperature[sensorCount];
+float *temperature;
+bool normalOperation;
 
 
 
-HardwareSerial Serial1(PA_10, PA_9);
+HardwareSerial i2cInterface (PA_10, PA_9);
+HardwareSerial UARTInterface (PB_7, PB_6);
+
+
+void receive1(){
+return;
+  
+}
 
 void setup() {
     rtc.setClockSource(STM32RTC::LSE_CLOCK);
     rtc.begin();
     analogReadResolution(12);
     LowPower.begin();
-}
-
-void loop() {
-  // put your main code here, to run repeatedly:
-    
-}
-
-
-
-
-
-
+    normalOperation = 1;
+    LowPower.enableWakeupFrom(&UARTInterface, receive1);
+    }
 
 
 float min_func(float *temperatures){
@@ -70,7 +71,7 @@ float min_func(float *temperatures){
 
 int calcwaitingtime(float minimumTemp){
 
-  return (minimumTemp - criticalTemp)/(maxTempSlope *3600000);
+  return (minimumTemp - criticalTemp)/(maxTempSlope);
 }
 
 float checkEnergy(){
@@ -101,7 +102,7 @@ void shortPSM(){
                 sleepDuration = minute;
                        
             }
-            else if(sleepDuration > 15*minute) // if calculated sleepduration is larger than 15 minute, sleep for 15 minutes
+            else if(sleepDuration > 15*minute) // if calculated sleepduration is larger than 15 minutes, sleep for 15 minutes
             {
                 sleepDuration = 15*minute;
             }
@@ -115,4 +116,109 @@ void shortPSM(){
     
     
     
+}
+
+void transmitOffSeason(float **tempartureArray){
+
+  
+}
+
+void transmit(float *temperature){
+  //battery, data, time, state
+  
+  checkEnergy();
+  UARTInterface.begin(57600);
+
+  char timeMinutes[2];
+  char timeHours[2];
+  char timeDay[2];
+  char timeMonth[2];
+  char timeYear[4];
+  char batteryLevel[3];
+  char data[20];
+  itoa(rtc.getMinutes(),timeMinutes,16);
+  itoa(rtc.getHours(),timeHours,16);
+  itoa(rtc.getDay(),timeDay,16);
+  itoa(rtc.getMonth(),timeMonth,16);
+  itoa(rtc.getYear(),timeYear,16);
+  dtostrf(checkEnergy(), )
+
+  UARTInterface.write(buffer);
+  LowPower.deepSleep(timeUntilReceive);
+  UARTInterface.end();
+  
+}
+
+float *tempMeasurement()
+{
+  
+  tempTemperatures[0] = 1;
+  tempTemperatures[1] = 2;
+  tempTemperatures[2] = 3;
+  tempTemperatures[3] = 4;
+  tempTemperatures[4] = 5;
+  return tempTemperatures;
+  
+}
+
+void offSeasonState(){
+  float *tempArray[5];
+
+  for (size_t i = 0; i < offSeasonIterations; i++)
+  {
+    tempArray[i] = tempMeasurement();
+    LowPower.deepSleep(offSeasonSleepDuration);
+    
+  }
+
+  transmitOffSeason(tempArray);
+  return;  
+}
+
+
+
+void normalMode(){
+  int sleepDuration = (min_func(temperature)-criticalTemp)/maxTempSlope;
+  LowPower.deepSleep(sleepDuration);
+  return;
+}
+
+void criticalMode(){
+  LowPower.deepSleep(5*minute);
+}
+
+void longPSM(){
+  LowPower.deepSleep(60*minute);
+}
+
+
+
+void loop() {
+  // put your main code here, to run repeatedly:
+    if(normalOperation == 1)
+    {
+      shortPSM();
+      if(offSeason == 1)
+      {
+        offSeasonState();
+      }
+      else 
+      {
+
+        temperature = tempMeasurement();
+        transmit(temperature);
+          if((checkEnergy()) < threshold_LPSM)
+          {
+            longPSM();
+          }
+          else if (min_func(temperature) < criticalTemp)
+          {
+            criticalMode();
+          }
+          else 
+          {
+            normalMode();
+          }
+      }
+    }
 }
