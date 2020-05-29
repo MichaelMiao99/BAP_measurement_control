@@ -128,7 +128,7 @@ void transmit(float *temperature){
   
   checkEnergy();
   UARTInterface.begin(57600);
-
+  char payload[36];
   char timeMinutes[2];
   char timeHours[2];
   char timeDay[2];
@@ -136,12 +136,16 @@ void transmit(float *temperature){
   char timeYear[4];
   char batteryLevel[3];
   char data[20];
+  char state;
   itoa(rtc.getMinutes(),timeMinutes,16);
   itoa(rtc.getHours(),timeHours,16);
   itoa(rtc.getDay(),timeDay,16);
   itoa(rtc.getMonth(),timeMonth,16);
   itoa(rtc.getYear(),timeYear,16);
-  dtostrf(checkEnergy(), )
+  data = 
+  
+  payload = (batteryLevel | data | timeYear | timeMonth | timeDay | timeHours | timeMinutes | state);
+
 
   UARTInterface.write(buffer);
   LowPower.deepSleep(timeUntilReceive);
