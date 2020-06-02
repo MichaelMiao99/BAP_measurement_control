@@ -55,6 +55,13 @@ void receive1(){
 return;
   
 }
+int checkEnergy(){
+    float capVoltage;
+    capVoltage = analogRead(A3); //read voltage from io pin
+    //Calculate energy from capvoltage
+    return (int) 1000*capVoltage; //here the 1000 is put there so that an integer value with the data is obtained. The comma should be moved upon reception.
+}
+
 bool join(){
   //checkenergy
   //setup lora module over uart
@@ -82,7 +89,7 @@ bool join(){
 void setup() {
     joined = 0;
     rtc.setClockSource(STM32RTC::LSE_CLOCK);
-    rtc.begin();
+    rtc.begin(24);
     analogReadResolution(12);
     LowPower.begin();
     normalOperation = 1;
@@ -119,12 +126,7 @@ int calcwaitingtime(float minimumTemp){
   return (minimumTemp - criticalTemp)/(maxTempSlope);
 }
 
-int checkEnergy(){
-    float capVoltage;
-    capVoltage = analogRead(A3); //read voltage from io pin
-    //Calculate energy from capvoltage
-    return (int) 1000*capVoltage; //here the 1000 is put there so that an integer value with the data is obtained. The comma should be moved upon reception.
-}
+
 
 void shortPSM(){
     int previousEnergy, currentEnergy;
@@ -244,19 +246,9 @@ void normalMode(){
 
 
 
-int timeToNextTransmission(int numberOfGroups){
-  int currentMinutes = rtc.getMinutes();
-  int currentSeconds = rtc.getSeconds();
-  int currentSubseconds = rtc.getSubSeconds();
 
-  int timeSegment = currentMinutes/5;
-  int nextTimeSegment = (timeSegment + numberOfGroups) % 12;
-  
-}
 
 void criticalMode(){
-  
-  int sleepDuration;   
   int numberOfGroups;
   int energyLevel = checkEnergy();
   if(energyLevel < 144 * energyUnit){
@@ -277,10 +269,28 @@ void criticalMode(){
   else if(energyLevel < 12 * energyUnit){
     numberOfGroups = 12;
   }
-  
-  sleepDuration = timeToNextTransmission(numberOfGroups);
+  ///////////////////////////////////////////////////////
+  //CALCULATE THE NEXT TRANSMISSION TIME/////////////////
+  ///////////////////////////////////////////////////////
+  int currentHours= rtc.getHours();
+  int currentMinutes = rtc.getMinutes();
+  int currentSeconds = rtc.getSeconds();
+  int currentSubseconds = rtc.getSubSeconds();
+  int timeSegment = currentMinutes/5;
+  int nextTimeSegment = timeSegment + numberOfGroups;
+  int nextHours = currentHours;
+  if(nextTimeSegment >= 12)
+  {
+    nextHours = (currentHours+1) % 24;
+    nextTimeSegment = nextTimeSegment % 12;
+  }
+  int nextMinutes = nextTimeSegment * 5 + offsetMinute;
 
-  LowPower.deepSleep(5*minute);
+  //transceive meuk
+  transmit(temperature);
+
+  rtc.setAlarmTime(nextHours, nextMinutes, currentSeconds, currentSubseconds);
+  LowPower.deepSleep();
 }
 
 void longPSM(){
@@ -300,7 +310,7 @@ void loop(){
       {
 
         temperature = tempMeasurement();
-        transmit(temperature);
+        //transmit(temperature);
           if((checkEnergy()) < threshold_LPSM)
           {
             longPSM();
