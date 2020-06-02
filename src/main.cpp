@@ -18,21 +18,33 @@ const byte day = 15;
 const byte month = 6;
 const byte year = 15;
 
-const float threshold_SPSM = 3;
-const float threshold_LPSM = 2;
-const float threshold_CM = 1;
+const int threshold_SPSM = 3;
+const int threshold_LPSM = 2;
+const int threshold_CM = 1;
+const int threshold_Join = 2;
 const int sensorCount = 5;
+
 const float maxTempSlope = 8/3600000;
 const float criticalTemp = 0.5;
 const int minute = 60000;
 const int offSeasonIterations = 5;
 const int offSeasonSleepDuration = 60 * minute;
 const int timeUntilReceive = 3000;
+const int groupNumber = 1;
+const int energyUnit = 100;
+
+int timeSlotOffset;
 float tempTemperatures[sensorCount];
 bool offSeason;
 float *temperature;
 bool normalOperation;
+bool joined;
 
+
+
+int offsetMilli;
+int offsetSecond;
+int offsetMinute;
 
 
 HardwareSerial i2cInterface (PA_10, PA_9);
@@ -43,14 +55,47 @@ void receive1(){
 return;
   
 }
+bool join(){
+  //checkenergy
+  //setup lora module over uart
+  UARTInterface.begin(57600);
+  UARTInterface.write("mac set deveui FFFFFFFF");
+  UARTInterface.write("radio set sf sf7"); //enter spreadings factor (sf7,sf8,sf9,sf10,sf11 or sf12)
+  UARTInterface.write("mac set nwkskey AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  UARTInterface.write("mac set appskey AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  offsetMilli = rtc.getSubSeconds();
+  offsetSecond = rtc.getSeconds();
+  offsetMinute = rtc.getMinutes();
+  LowPower.enableWakeupFrom(&UARTInterface, receive1);
+  UARTInterface.write("mac join abp");
+  LowPower.deepSleep(); // sleep until command comes back
+  if(UARTInterface.readString() == "ok")
+  {
+    LowPower.deepSleep();
+    if(UARTInterface.readString() == "accepted"){
+    return 1;
+    }
+  }
+  return 0;
+}
 
 void setup() {
+    joined = 0;
     rtc.setClockSource(STM32RTC::LSE_CLOCK);
     rtc.begin();
     analogReadResolution(12);
     LowPower.begin();
     normalOperation = 1;
-    LowPower.enableWakeupFrom(&UARTInterface, receive1);
+    while(joined == 0){
+      if (checkEnergy() > threshold_Join){
+        joined = join();
+      }
+      else{
+        LowPower.deepSleep(5*minutes);
+      }
+    }
+    join();
+    
     }
 
 
@@ -74,15 +119,15 @@ int calcwaitingtime(float minimumTemp){
   return (minimumTemp - criticalTemp)/(maxTempSlope);
 }
 
-float checkEnergy(){
+int checkEnergy(){
     float capVoltage;
     capVoltage = analogRead(A3); //read voltage from io pin
     //Calculate energy from capvoltage
-    return 1*capVoltage;
+    return (int) 1000*capVoltage; //here the 1000 is put there so that an integer value with the data is obtained. The comma should be moved upon reception.
 }
 
 void shortPSM(){
-    float previousEnergy, currentEnergy;
+    int previousEnergy, currentEnergy;
     int sleepDuration;
     currentEnergy = checkEnergy();
     if (currentEnergy < threshold_SPSM)
@@ -123,34 +168,44 @@ void transmitOffSeason(float **tempartureArray){
   
 }
 
+
 void transmit(float *temperature){
   //battery, data, time, state
-  
-  checkEnergy();
+
   UARTInterface.begin(57600);
   char payload[36];
-  char timeMinutes[2];
-  char timeHours[2];
-  char timeDay[2];
-  char timeMonth[2];
-  char timeYear[4];
-  char batteryLevel[3];
-  char data[20];
-  char state;
+  char timeMinutes[3];
+  char timeHours[3];
+  char timeDay[3];
+  char timeMonth[3];
+  char timeYear[5];
+  char energyLevel[4];
+  char data[21];
+  char state[2];
+  char command[44];
+  //char txcommand[43]d
   itoa(rtc.getMinutes(),timeMinutes,16);
   itoa(rtc.getHours(),timeHours,16);
   itoa(rtc.getDay(),timeDay,16);
   itoa(rtc.getMonth(),timeMonth,16);
   itoa(rtc.getYear(),timeYear,16);
-  data = 
+  itoa(checkEnergy(),energyLevel,16);
   
-  payload = (batteryLevel | data | timeYear | timeMonth | timeDay | timeHours | timeMinutes | state);
-
-
-  UARTInterface.write(buffer);
+  strcpy(payload, energyLevel);
+  strcat(payload, data);
+  strcat(payload, timeYear);
+  strcat(payload, timeMonth);
+  strcat(payload, timeDay);
+  strcat(payload, timeHours);
+  strcat(payload, timeMinutes);
+  strcat(payload, state);
+  strcpy(command, "mac tx ");
+  strcat(command, payload);
+  Serial.write(command);
+  UARTInterface.write(command);
   LowPower.deepSleep(timeUntilReceive);
   UARTInterface.end();
-  
+  // 2 receive windows
 }
 
 float *tempMeasurement()
@@ -187,7 +242,44 @@ void normalMode(){
   return;
 }
 
+
+
+int timeToNextTransmission(int numberOfGroups){
+  int currentMinutes = rtc.getMinutes();
+  int currentSeconds = rtc.getSeconds();
+  int currentSubseconds = rtc.getSubSeconds();
+
+  int timeSegment = currentMinutes/5;
+  int nextTimeSegment = (timeSegment + numberOfGroups) % 12;
+  
+}
+
 void criticalMode(){
+  
+  int sleepDuration;   
+  int numberOfGroups;
+  int energyLevel = checkEnergy();
+  if(energyLevel < 144 * energyUnit){
+    numberOfGroups = 1;
+  }
+  else if(energyLevel < 72 * energyUnit){
+    numberOfGroups = 2;
+  }
+  else if(energyLevel < 48 * energyUnit){
+    numberOfGroups = 3;
+  }
+  else if(energyLevel < 36 * energyUnit){
+    numberOfGroups = 4;
+  }
+  else if(energyLevel < 24 * energyUnit){
+    numberOfGroups = 6;
+  }
+  else if(energyLevel < 12 * energyUnit){
+    numberOfGroups = 12;
+  }
+  
+  sleepDuration = timeToNextTransmission(numberOfGroups);
+
   LowPower.deepSleep(5*minute);
 }
 
@@ -195,10 +287,8 @@ void longPSM(){
   LowPower.deepSleep(60*minute);
 }
 
+void loop(){
 
-
-void loop() {
-  // put your main code here, to run repeatedly:
     if(normalOperation == 1)
     {
       shortPSM();
@@ -215,7 +305,7 @@ void loop() {
           {
             longPSM();
           }
-          else if (min_func(temperature) < criticalTemp)
+          else if (min_func(temperature) < threshold_CM)
           {
             criticalMode();
           }
