@@ -24,7 +24,7 @@ const int threshold_CM = 1;
 const int threshold_Join = 2;
 const int sensorCount = 5;
 
-const float maxTempSlope = 80 / 3600000;
+const float maxTempSlope = 80 / 60; //10th degrees per minute
 const int minute = 60000;
 const int offSeasonIterations = 5;
 const int offSeasonSleepDuration = 60 * minute;
@@ -35,9 +35,9 @@ const int maxRetransmit = 5;
 
 int criticalTemp;
 int timeSlotOffset;
-float tempTemperatures[sensorCount];
+int tempTemperatures[sensorCount];
 bool offSeason;
-float *temperature;
+int *temperature;
 bool normalOperation;
 bool joined;
 
@@ -45,12 +45,12 @@ int tsMilli;
 int tsSeconds;
 int tsMinutes;
 
-HardwareSerial i2cInterface(PA_10, PA_9);
 HardwareSerial UARTInterface(PB_7, PB_6);
+//TwoWire i2cInterface(PA_9,PA_10);
 
-void receive1()
-{
-}
+//void receive1()
+//{
+//}
 
 bool receive()
 {
@@ -91,10 +91,11 @@ int checkEnergy()
   return (int)1000 * capVoltage; //here the 1000 is put there so that an integer value with the data is obtained. The comma should be moved upon reception.
 }
 
-void request() //Function that is called when a response from the base station is desired.
+bool request() //Function that is called when a response from the base station is desired.
 {
   UARTInterface.begin(57600);
   UARTInterface.write("mac tx uncnf 2 FF"); //send transmission on port 2 so that the base station knows that it should send a time slot to the device.
+  return receive();
 }
 
 bool join()
@@ -104,24 +105,26 @@ bool join()
 
   UARTInterface.begin(57600);
   UARTInterface.write("mac set deveui FFFFFFFF");
+  UARTInterface.readString();
   UARTInterface.write("radio set sf sf7"); //enter spreadings factor (sf7,sf8,sf9,sf10,sf11 or sf12)
+  UARTInterface.readString();
   UARTInterface.write("mac set nwkskey AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  UARTInterface.readString();
   UARTInterface.write("mac set appskey AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  UARTInterface.readString();
   tsMilli = rtc.getSubSeconds();
   tsSeconds = rtc.getSeconds();
   tsMinutes = rtc.getMinutes();
-  LowPower.enableWakeupFrom(&UARTInterface, receive1);
+  LowPower.enableWakeupFrom(&UARTInterface, NULL);
   UARTInterface.write("mac join abp");
   if (UARTInterface.readString() == "ok")
   {
     LowPower.deepSleep();
     if (UARTInterface.readString() == "accepted")
     {
-      request();
-      return 1;
+      return request();
     }
   }
-
   return 0;
 }
 
@@ -147,9 +150,9 @@ void setup()
   }
 }
 
-float min_func(float *temperatures)
+int min_func(int *temperatures)
 {
-  float min = temperatures[0];
+  int min = temperatures[0];
   for (size_t i = 1; i < sensorCount; i++)
   {
     if (temperatures[i] < min)
@@ -199,10 +202,6 @@ void shortPSM()
   return;
 }
 
-void transmitOffSeason(float **tempartureArray)
-{
-}
-
 String padLeft(String input, uint16_t desiredLength)
 {
 
@@ -213,18 +212,42 @@ String padLeft(String input, uint16_t desiredLength)
   return input;
 }
 
-bool transmit(int energyLevel, float *temperature)
+bool transmitOffSeason(int energyLevel, int **temperatureArray)
 {
-  char command[38];
-  char payload[23];
+  char command[(offSeasonIterations * sensorCount * 4) + 18];
+  char payload[(offSeasonIterations * sensorCount * 4) + 3];
   String EL = String(int16_t(energyLevel), HEX);
-  String t1 = String(int16_t(temperature[0]), HEX);
-  String t2 = String(int16_t(temperature[1]), HEX);
-  String t3 = String(int16_t(temperature[2]), HEX);
-  String t4 = String(int16_t(temperature[3]), HEX);
-  String t5 = String(int16_t(temperature[4]), HEX);
-  String concatenated = padLeft(EL, 2) + padLeft(t1, 4) + padLeft(t2, 4) + padLeft(t3, 4) + padLeft(t4, 4) + padLeft(t5, 4);
-  concatenated.toCharArray(payload, 23);
+  String concatenated = padLeft(EL, 2);
+  for (size_t i = 0; i < offSeasonIterations; i++)
+  {
+    for (size_t j = 0; i < sensorCount; j++)
+    {
+      concatenated = concatenated + padLeft(String(int16_t(temperatureArray[i][j]), HEX), 4);
+    }
+  }
+
+  concatenated.toCharArray(payload, (offSeasonIterations * sensorCount * 4) + 3);
+
+  strcpy(command, "mac tx uncnf 3 ");
+  strcat(command, payload);
+
+  UARTInterface.begin(57600);
+  UARTInterface.write(command);
+  return receive();
+}
+
+bool transmit(int energyLevel, int *temperature)
+{
+  char command[sensorCount * 4 + 18];
+  char payload[sensorCount * 4 + 3];
+  String EL = String(int16_t(energyLevel), HEX);
+  String concatenated = padLeft(EL, 2);
+  for (size_t i = 0; i < 5; i++)
+  {
+    concatenated = concatenated + padLeft(String(int16_t(temperature[i]), HEX), 4);
+  }
+
+  concatenated.toCharArray(payload, sensorCount * 4 + 3);
 
   strcpy(command, "mac tx uncnf 1 ");
   strcat(command, payload);
@@ -234,79 +257,134 @@ bool transmit(int energyLevel, float *temperature)
   return receive();
 }
 
-float *tempMeasurement()
+void tempMeasurement()
 {
+  Wire.setClock(100000);
+  Wire.setSDA(PA_10);
+  Wire.setSCL(PA_9);
+  Wire.begin();
+  for (int i = 0; i < sensorCount; i++)
+  {
+    Wire.beginTransmission(0x44 + i); // transmit to device
+    Wire.write(0x1);                  // select configuration register
+    Wire.write(0b11000000);           //set configuration registers (select one-shot mode)
+    Wire.write(0b10000000);
 
-  tempTemperatures[0] = 1;
-  tempTemperatures[1] = 2;
-  tempTemperatures[2] = 3;
-  tempTemperatures[3] = 4;
-  tempTemperatures[4] = 5;
-  return tempTemperatures;
+    Wire.beginTransmission(0x44 + i); // select tvalue register
+    Wire.write(0x0);
+
+    Wire.beginTransmission(0x44 + i);
+    int16_t MSB = Wire.read() * 256;
+    int16_t LSB = Wire.read();
+    int16_t value = MSB + LSB;
+    temperature[i] = value / 12.8; //due to roundoff error of +-0.2
+  }
+  Wire.endTransmission(); // stop transmitting
+  return;
 }
 
 void offSeasonState()
 {
-  float *tempArray[5];
+  int *tempArray[5];
 
   for (size_t i = 0; i < offSeasonIterations; i++)
   {
-    tempArray[i] = tempMeasurement();
+    tempMeasurement();
+    tempArray[i] = temperature;
     LowPower.deepSleep(offSeasonSleepDuration);
   }
 
-  transmitOffSeason(tempArray);
+  transmitOffSeason(checkEnergy(), tempArray);
   return;
+}
+
+int closestFrequency()
+{
+  int minTimeToNext = (min_func(temperature) - criticalTemp) / maxTempSlope;
+  int availablePeriods[6] = {60, 30, 20, 15, 10, 5};
+  int minPeriod = 5;
+  for (size_t i = 0; i < 6; i++)
+  {
+    if (availablePeriods[i] < minTimeToNext)
+    {
+      minPeriod = availablePeriods[i];
+      break;
+    }
+  }
+  return minPeriod;
+}
+int nextTimeSeg(int currentTimeSegment, int measurementPeriod) // Calculate the next time segment a device should measure.
+{
+  int availableTimeSegments[60 / measurementPeriod];
+  int groupAmount = measurementPeriod / 5;
+  for (size_t i = 0; i < 12; i++) //make a list of all timesegments that belong to the group in this mode. Time segments from 0-11 and groups from 1-12
+  {
+    if (i * measurementPeriod / 5 + ((groupNumber - 1) % groupAmount) < 12)
+    {
+      availableTimeSegments[i] = i * measurementPeriod / 5 + ((groupNumber - 1) % groupAmount); //put timesegment in array if lower than 12
+    }
+    else
+    {
+      break; // stop earlier if subsequent timeslots will be higher or equal to 12
+    }
+  }
+
+  for (int i = 0; i < 60 / measurementPeriod; i++) // determine what timesegment comes next
+  {
+    if (availableTimeSegments[i] > currentTimeSegment) // since availableTimeSegments is in ascending order, the first time segment that is larger than the current time segment is chosen
+    {
+      return availableTimeSegments[i];
+    }
+  }
+  return availableTimeSegments[0]; //If the next time slot is after the passing of the hour, return the first segment in the hour.
 }
 
 void normalMode()
 {
-  int sleepDuration = (min_func(temperature) - criticalTemp) / maxTempSlope;
-  LowPower.deepSleep(sleepDuration);
-  return;
-}
-
-void criticalMode()
-{
-  int numberOfGroups;
+  int measurementPeriodEL;
+  int measurementPeriodTemp;
+  int measurementPeriod;
   int energyLevel = checkEnergy();
   if (energyLevel < 144 * energyUnit)
   {
-    numberOfGroups = 1;
+    measurementPeriodEL = 5;
   }
   else if (energyLevel < 72 * energyUnit)
   {
-    numberOfGroups = 2;
+    measurementPeriodEL = 10;
   }
   else if (energyLevel < 48 * energyUnit)
   {
-    numberOfGroups = 3;
+    measurementPeriodEL = 15;
   }
   else if (energyLevel < 36 * energyUnit)
   {
-    numberOfGroups = 4;
+    measurementPeriodEL = 20;
   }
   else if (energyLevel < 24 * energyUnit)
   {
-    numberOfGroups = 6;
+    measurementPeriodEL = 30;
   }
   else if (energyLevel < 12 * energyUnit)
   {
-    numberOfGroups = 12;
+    measurementPeriodEL = 60;
   }
+  tempMeasurement();
+  measurementPeriodTemp = closestFrequency(); //calculate the minimum amount of groups needed for correct temperature measurement time interval
+  measurementPeriod = max(measurementPeriodEL, measurementPeriodTemp);
   ///////////////////////////////////////////////////////
   //CALCULATE THE NEXT TRANSMISSION TIME/////////////////
   ///////////////////////////////////////////////////////
   int currentHours = rtc.getHours();
   int currentMinutes = rtc.getMinutes();
-  int timeSegment = currentMinutes / 5;
-  int nextTimeSegment = timeSegment + numberOfGroups;
+  int currentTimeSegment = currentMinutes / 5;
+  int nextTimeSegment = nextTimeSeg(currentTimeSegment, measurementPeriod);
   int nextHours = currentHours;
-  if (nextTimeSegment >= 12)
-  {
-    nextHours = (currentHours + 1) % 24;
-    nextTimeSegment = nextTimeSegment % 12;
-  }
+  //if (nextTimeSegment >= 12) // dit hoeft niet meer vgm
+  //{
+  //  nextHours = (currentHours + 1) % 24;
+  //  nextTimeSegment = nextTimeSegment % 12;
+  //}
   int nextMinutes = nextTimeSegment * 5 + tsMinutes;
 
   //transceive meuk
@@ -326,7 +404,6 @@ void criticalMode()
       }
     }
   }
-
   rtc.setAlarmTime(nextHours, nextMinutes, tsSeconds, tsMilli);
   LowPower.deepSleep();
   return;
@@ -346,20 +423,6 @@ void loop()
   }
   else
   {
-
-    temperature = tempMeasurement();
-    //transmit(temperature);
-    if ((checkEnergy()) < threshold_LPSM)
-    {
-      longPSM();
-    }
-    else if (min_func(temperature) < threshold_CM)
-    {
-      criticalMode();
-    }
-    else
-    {
-      normalMode();
-    }
+    normalMode();
   }
 }
