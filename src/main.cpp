@@ -63,16 +63,24 @@ bool receive()
     if (receivedMessage.startsWith("mac_rx"))
     { // adjust for different port numbers
       String receivedData = receivedMessage.substring(receivedMessage.lastIndexOf(" ") + 1);
+  	  char receiveBuffTime[9];
+      char receiveBuffTs[7];
+      (receivedData.substring(0,7)).toCharArray(receiveBuffTime,9);
+      int timeInteger = strtoul(receiveBuffTime,NULL,16);
+      (receivedData.substring(8,13)).toCharArray(receiveBuffTs,7);
+      int timeIntegerTs = strtoul(receiveBuffTs,NULL,16);
 
-      rtc.setHours(uint8_t((receivedData.substring(0, 1)).toInt()));
-      rtc.setMinutes(uint8_t((receivedData.substring(2, 3)).toInt()));
-      rtc.setSeconds(uint8_t((receivedData.substring(4, 5)).toInt()));
-      rtc.setSubSeconds(uint8_t((receivedData.substring(6, 9)).toInt()));
-      tsMinutes = uint8_t((receivedData.substring(10, 11)).toInt());
-      tsSeconds = uint8_t((receivedData.substring(12, 13)).toInt());
-      tsMilli = uint8_t((receivedData.substring(14, 17)).toInt());
-      criticalTemp = uint8_t((receivedData.substring(18, 21)).toInt());
-      offSeason = uint8_t((receivedData.substring(22, 23)).toInt());
+      rtc.setHours(((timeInteger)/3600000)%24);
+      rtc.setMinutes(((timeInteger)/60000)%60);
+      rtc.setSeconds(((timeInteger)/1000) % 60);
+      rtc.setSubSeconds((timeInteger) % 1000);
+
+      tsMinutes = ((timeIntegerTs)/60000)%60;
+      tsSeconds = ((timeIntegerTs)/1000) % 60;
+      tsMilli = (timeInteger) % 1000;
+
+      criticalTemp = uint8_t((receivedData.substring(14, 17)).toInt());
+      offSeason = uint8_t((receivedData.substring(18, 19)).toInt());
 
       return 1;
     }
@@ -83,6 +91,7 @@ bool receive()
   }
   return 0;
 }
+
 int checkEnergy()
 {
   float capVoltage;
