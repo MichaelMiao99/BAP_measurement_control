@@ -373,7 +373,7 @@ void normalMode()
   else if (energyLevel < 24 * energyUnit)
   {
     measurementPeriodEL = 30;
-  }
+  } 
   else if (energyLevel < 12 * energyUnit)
   {
     measurementPeriodEL = 60;
