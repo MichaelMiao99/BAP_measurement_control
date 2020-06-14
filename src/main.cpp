@@ -38,7 +38,6 @@ int timeSlotOffset;
 int tempTemperatures[sensorCount];
 bool offSeason;
 int *temperature;
-bool normalOperation;
 bool joined;
 
 int tsMilli;
@@ -63,20 +62,20 @@ bool receive()
     if (receivedMessage.startsWith("mac_rx"))
     { // adjust for different port numbers
       String receivedData = receivedMessage.substring(receivedMessage.lastIndexOf(" ") + 1);
-  	  char receiveBuffTime[9];
+      char receiveBuffTime[9];
       char receiveBuffTs[7];
-      (receivedData.substring(0,7)).toCharArray(receiveBuffTime,9);
-      int timeInteger = strtoul(receiveBuffTime,NULL,16);
-      (receivedData.substring(8,13)).toCharArray(receiveBuffTs,7);
-      int timeIntegerTs = strtoul(receiveBuffTs,NULL,16);
+      (receivedData.substring(0, 7)).toCharArray(receiveBuffTime, 9);
+      int timeInteger = strtoul(receiveBuffTime, NULL, 16);
+      (receivedData.substring(8, 13)).toCharArray(receiveBuffTs, 7);
+      int timeIntegerTs = strtoul(receiveBuffTs, NULL, 16);
 
-      rtc.setHours(((timeInteger)/3600000)%24);
-      rtc.setMinutes(((timeInteger)/60000)%60);
-      rtc.setSeconds(((timeInteger)/1000) % 60);
+      rtc.setHours(((timeInteger) / 3600000) % 24);
+      rtc.setMinutes(((timeInteger) / 60000) % 60);
+      rtc.setSeconds(((timeInteger) / 1000) % 60);
       rtc.setSubSeconds((timeInteger) % 1000);
 
-      tsMinutes = ((timeIntegerTs)/60000)%60;
-      tsSeconds = ((timeIntegerTs)/1000) % 60;
+      tsMinutes = ((timeIntegerTs) / 60000) % 60;
+      tsSeconds = ((timeIntegerTs) / 1000) % 60;
       tsMilli = (timeInteger) % 1000;
 
       criticalTemp = uint8_t((receivedData.substring(14, 17)).toInt());
@@ -94,25 +93,34 @@ bool receive()
 
 int checkEnergy()
 {
-  float capVoltage;
-  capVoltage = analogRead(A3); //read voltage from io pin
+  float capVoltage = analogRead(PA_1); //read voltage from io pin
   //Calculate energy from capvoltage
-  return (int)1000 * capVoltage; //here the 1000 is put there so that an integer value with the data is obtained. The comma should be moved upon reception.
+  float availableEnergy = 0.5 * 15 * sq(capVoltage);
+  float currentConsumption = (23.2 + 85 * (capVoltage*5.5/1.7)) * pow(10,-6);
+  float energyLeft = availableEnergy - currentConsumption *12;
+  float energyPerTransmission = 0.04968;
+  float numberOfTransmissions = energyLeft / energyPerTransmission;
+  return (int) numberOfTransmissions; 
 }
 
 bool request() //Function that is called when a response from the base station is desired.
 {
-  UARTInterface.begin(57600);
+  UARTInterface.begin(4096);
   UARTInterface.write("mac tx uncnf 2 FF"); //send transmission on port 2 so that the base station knows that it should send a time slot to the device.
   return receive();
 }
 
 bool join()
 {
-  //checkenergy
-  //setup lora module over uart
+  //Set RN2483 module's baudrate to match system clock
+  UARTInterface.end();
+  pinMode(PA_9, OUTPUT);
+  digitalWrite(PA_9, LOW); //send break condition to rn2483 to trigger automatic baud rate detection
+  delay(1);
+  UARTInterface.begin(4096);
+  UARTInterface.write(0x55);
 
-  UARTInterface.begin(57600);
+  //setup lora module over uart
   UARTInterface.write("mac set deveui FFFFFFFF");
   UARTInterface.readString();
   UARTInterface.write("radio set sf sf7"); //enter spreadings factor (sf7,sf8,sf9,sf10,sf11 or sf12)
@@ -121,10 +129,7 @@ bool join()
   UARTInterface.readString();
   UARTInterface.write("mac set appskey AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
   UARTInterface.readString();
-  tsMilli = rtc.getSubSeconds();
-  tsSeconds = rtc.getSeconds();
-  tsMinutes = rtc.getMinutes();
-  LowPower.enableWakeupFrom(&UARTInterface, NULL);
+
   UARTInterface.write("mac join abp");
   if (UARTInterface.readString() == "ok")
   {
@@ -140,17 +145,17 @@ bool join()
 void setup()
 {
   joined = 0;
+  LowPower.enableWakeupFrom(&UARTInterface, NULL);
   rtc.setClockSource(STM32RTC::LSE_CLOCK);
-  rtc.begin(24);
-  analogReadResolution(12);
-  LowPower.begin();
-  normalOperation = 1;
-  while (joined == 0)
+  rtc.begin(24);            //Set time format to 24h time format
+  analogReadResolution(12); // Set ADC accuracy to 12 bits
+  LowPower.begin();         //Initialize low power functionalities
+  while (joined == 0)       //try to join as long as it has not joined yet
   {
     if (checkEnergy() > threshold_Join)
     {
       LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
-      joined = join();
+      joined = join();                                   //join the LoRa network
     }
     else
     {
@@ -176,8 +181,32 @@ int calcwaitingtime(float minimumTemp)
 {
   return (minimumTemp - criticalTemp) / (maxTempSlope);
 }
+int nextTimeSeg(int currentTimeSegment, int measurementPeriod) // Calculate the next time segment a device should measure.
+{
+  int availableTimeSegments[60 / measurementPeriod];
+  int groupAmount = measurementPeriod / 5;
+  for (size_t i = 0; i < 12; i++) //make a list of all timesegments that belong to the group in this mode. Time segments from 0-11 and groups from 1-12
+  {
+    if (i * measurementPeriod / 5 + ((groupNumber - 1) % groupAmount) < 12)
+    {
+      availableTimeSegments[i] = i * measurementPeriod / 5 + ((groupNumber - 1) % groupAmount); //put timesegment in array if lower than 12
+    }
+    else
+    {
+      break; // stop earlier if subsequent timeslots will be higher or equal to 12
+    }
+  }
 
-void shortPSM()
+  for (int i = 0; i < 60 / measurementPeriod; i++) // determine what timesegment comes next
+  {
+    if (availableTimeSegments[i] > currentTimeSegment) // since availableTimeSegments is in ascending order, the first time segment that is larger than the current time segment is chosen
+    {
+      return availableTimeSegments[i];
+    }
+  }
+  return availableTimeSegments[0]; //If the next time slot is after the passing of the hour, return the first segment in the hour.
+}
+bool shortPSM()
 {
   int previousEnergy, currentEnergy;
   int sleepDuration;
@@ -207,8 +236,17 @@ void shortPSM()
       previousEnergy = currentEnergy;
       currentEnergy = checkEnergy();
     }
+    int currentHours = rtc.getHours();
+    int currentMinutes = rtc.getMinutes();
+    int currentTimeSegment = currentMinutes / 5;
+    int nextTimeSegment = nextTimeSeg(currentTimeSegment, 12);
+    int nextHours = currentHours;
+    int nextMinutes = nextTimeSegment * 5 + tsMinutes;
+    rtc.setAlarmTime(nextHours, nextMinutes, tsSeconds, tsMilli);
+    LowPower.deepSleep();
+    return 0;
   }
-  return;
+  return 1;
 }
 
 String padLeft(String input, uint16_t desiredLength)
@@ -298,12 +336,28 @@ void offSeasonState()
 
   for (size_t i = 0; i < offSeasonIterations; i++)
   {
+    LowPower.deepSleep(offSeasonSleepDuration);
     tempMeasurement();
     tempArray[i] = temperature;
-    LowPower.deepSleep(offSeasonSleepDuration);
   }
 
-  transmitOffSeason(checkEnergy(), tempArray);
+  if (transmitOffSeason(checkEnergy(), tempArray) == 0)
+  {
+    joined = 0;
+    while (joined == 0)
+    {
+      if (checkEnergy() > threshold_Join)
+      {
+        LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
+        joined = join();
+      }
+      else
+      {
+        LowPower.deepSleep(5 * minutes);
+      }
+    }
+  }
+
   return;
 }
 
@@ -322,31 +376,8 @@ int closestFrequency()
   }
   return minPeriod;
 }
-int nextTimeSeg(int currentTimeSegment, int measurementPeriod) // Calculate the next time segment a device should measure.
-{
-  int availableTimeSegments[60 / measurementPeriod];
-  int groupAmount = measurementPeriod / 5;
-  for (size_t i = 0; i < 12; i++) //make a list of all timesegments that belong to the group in this mode. Time segments from 0-11 and groups from 1-12
-  {
-    if (i * measurementPeriod / 5 + ((groupNumber - 1) % groupAmount) < 12)
-    {
-      availableTimeSegments[i] = i * measurementPeriod / 5 + ((groupNumber - 1) % groupAmount); //put timesegment in array if lower than 12
-    }
-    else
-    {
-      break; // stop earlier if subsequent timeslots will be higher or equal to 12
-    }
-  }
 
-  for (int i = 0; i < 60 / measurementPeriod; i++) // determine what timesegment comes next
-  {
-    if (availableTimeSegments[i] > currentTimeSegment) // since availableTimeSegments is in ascending order, the first time segment that is larger than the current time segment is chosen
-    {
-      return availableTimeSegments[i];
-    }
-  }
-  return availableTimeSegments[0]; //If the next time slot is after the passing of the hour, return the first segment in the hour.
-}
+
 
 void normalMode()
 {
@@ -425,13 +456,15 @@ void longPSM()
 
 void loop()
 {
-  shortPSM();
-  if (offSeason == 1)
+  if (shortPSM())
   {
-    offSeasonState();
-  }
-  else
-  {
-    normalMode();
+    if (offSeason == 1)
+    {
+      offSeasonState();
+    }
+    else
+    {
+      normalMode();
+    }
   }
 }
