@@ -6,36 +6,25 @@
 
 // Get the  rtc object
 STM32RTC &rtc = STM32RTC::getInstance();
-/* Change these values to set the current initial time */
-const byte seconds = 0;
-const byte minutes = 0;
-const byte hours = 16;
 
-/* Change these values to set the current initial date */
-/* Monday 15th June 2015 */
-const byte weekDay = 1;
-const byte day = 15;
-const byte month = 6;
-const byte year = 15;
-
-const int threshold_SPSM = 3;
-const int threshold_LPSM = 2;
-const int threshold_CM = 1;
-const int threshold_Join = 2;
+const int threshold_PSM = 2;
+//const int threshold_CM = 1;
+const int threshold_Join = 10;
 const int sensorCount = 5;
+const float maximumTemperatureSlope = 8.3;
 
-const float maxTempSlope = 80 / 60; //10th degrees per minute
-const int minute = 60000;
-const int offSeasonIterations = 5;
+const int minute = 60000; // 1 minute = 60000ms
+const int offSeasonIterations = 4;
 const int offSeasonSleepDuration = 60 * minute;
-const int timeUntilReceive = 3000;
+//const int timeUntilReceive = 3000;
 const int groupNumber = 1;
-const int energyUnit = 100;
-const int maxRetransmit = 5;
+
+const char deviceID[9] = "";
+const char spreadingFactor[5] = "";
+const char nwkskey[33] = "";
+const char appskey[33] = "";
 
 int criticalTemp;
-int timeSlotOffset;
-int tempTemperatures[sensorCount];
 bool offSeason;
 int *temperature;
 bool joined;
@@ -44,23 +33,32 @@ int tsMilli;
 int tsSeconds;
 int tsMinutes;
 
-HardwareSerial UARTInterface(PB_7, PB_6);
-//TwoWire i2cInterface(PA_9,PA_10);
+const float maxTempSlope = (10.0 * maximumTemperatureSlope) / 60; //10th degrees per minute
 
-//void receive1()
-//{
-//}
+HardwareSerial UARTInterface(PB_7, PB_6);
+
+int checkEnergy()
+{
+  float capVoltage = analogRead(PA_1); //read voltage from io pin
+  capVoltage = map(capVoltage, 0, 4095, 0, 1.7);
+  //Calculate energy from capvoltage
+  float availableEnergy = 0.5 * 15 * sq(capVoltage);
+  float currentConsumption = (24.5 + 85 * (capVoltage * 5.5 / 1.7)) * pow(10, -6);
+  float energyLeft = availableEnergy - currentConsumption * 12;
+  float energyPerTransmission = 0.04968;
+  float numberOfTransmissions = energyLeft / energyPerTransmission;
+  return (int)numberOfTransmissions;
+}
 
 bool receive()
 {
   if (UARTInterface.readString() == "ok")
   {
     LowPower.deepSleep(5000); //sleep for a maximum of 5 seconds to ensure wakup after transmission
-                              //mac_rx <portno> <data>
     String receivedMessage = UARTInterface.readString();
     UARTInterface.end();
-    if (receivedMessage.startsWith("mac_rx"))
-    { // adjust for different port numbers
+    if (receivedMessage.startsWith("mac_rx")) //mac_rx <portno> <data>
+    {                                         // adjust for different port numbers
       String receivedData = receivedMessage.substring(receivedMessage.lastIndexOf(" ") + 1);
       char receiveBuffTime[9];
       char receiveBuffTs[7];
@@ -91,18 +89,6 @@ bool receive()
   return 0;
 }
 
-int checkEnergy()
-{
-  float capVoltage = analogRead(PA_1); //read voltage from io pin
-  //Calculate energy from capvoltage
-  float availableEnergy = 0.5 * 15 * sq(capVoltage);
-  float currentConsumption = (23.2 + 85 * (capVoltage*5.5/1.7)) * pow(10,-6);
-  float energyLeft = availableEnergy - currentConsumption *12;
-  float energyPerTransmission = 0.04968;
-  float numberOfTransmissions = energyLeft / energyPerTransmission;
-  return (int) numberOfTransmissions; 
-}
-
 bool request() //Function that is called when a response from the base station is desired.
 {
   UARTInterface.begin(4096);
@@ -121,13 +107,29 @@ bool join()
   UARTInterface.write(0x55);
 
   //setup lora module over uart
-  UARTInterface.write("mac set deveui FFFFFFFF");
+  char setDeveui[24]; 
+  char setSF[18];
+  char setNwks[49];
+  char setApps[49];
+
+  strcpy(setDeveui, "mac set deveui ");
+  strcat(setDeveui, deviceID);
+  UARTInterface.write(setDeveui);
   UARTInterface.readString();
-  UARTInterface.write("radio set sf sf7"); //enter spreadings factor (sf7,sf8,sf9,sf10,sf11 or sf12)
+
+  strcpy(setSF, "radio set sf ");
+  strcat(setSF, spreadingFactor);
+  UARTInterface.write(setSF); 
   UARTInterface.readString();
-  UARTInterface.write("mac set nwkskey AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+  strcpy(setNwks, "mac set nwkskey ");
+  strcat(setNwks, nwkskey);
+  UARTInterface.write(setNwks);
   UARTInterface.readString();
-  UARTInterface.write("mac set appskey AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+  strcpy(setApps, "mac set appskey ");
+  strcat(setApps, appskey);
+  UARTInterface.write(setApps);
   UARTInterface.readString();
 
   UARTInterface.write("mac join abp");
@@ -142,29 +144,7 @@ bool join()
   return 0;
 }
 
-void setup()
-{
-  joined = 0;
-  LowPower.enableWakeupFrom(&UARTInterface, NULL);
-  rtc.setClockSource(STM32RTC::LSE_CLOCK);
-  rtc.begin(24);            //Set time format to 24h time format
-  analogReadResolution(12); // Set ADC accuracy to 12 bits
-  LowPower.begin();         //Initialize low power functionalities
-  while (joined == 0)       //try to join as long as it has not joined yet
-  {
-    if (checkEnergy() > threshold_Join)
-    {
-      LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
-      joined = join();                                   //join the LoRa network
-    }
-    else
-    {
-      LowPower.deepSleep(5 * minutes);
-    }
-  }
-}
-
-int min_func(int *temperatures)
+int minFunc(int *temperatures)
 {
   int min = temperatures[0];
   for (size_t i = 1; i < sensorCount; i++)
@@ -177,78 +157,6 @@ int min_func(int *temperatures)
   return min;
 }
 
-int calcwaitingtime(float minimumTemp)
-{
-  return (minimumTemp - criticalTemp) / (maxTempSlope);
-}
-int nextTimeSeg(int currentTimeSegment, int measurementPeriod) // Calculate the next time segment a device should measure.
-{
-  int availableTimeSegments[60 / measurementPeriod];
-  int groupAmount = measurementPeriod / 5;
-  for (size_t i = 0; i < 12; i++) //make a list of all timesegments that belong to the group in this mode. Time segments from 0-11 and groups from 1-12
-  {
-    if (i * measurementPeriod / 5 + ((groupNumber - 1) % groupAmount) < 12)
-    {
-      availableTimeSegments[i] = i * measurementPeriod / 5 + ((groupNumber - 1) % groupAmount); //put timesegment in array if lower than 12
-    }
-    else
-    {
-      break; // stop earlier if subsequent timeslots will be higher or equal to 12
-    }
-  }
-
-  for (int i = 0; i < 60 / measurementPeriod; i++) // determine what timesegment comes next
-  {
-    if (availableTimeSegments[i] > currentTimeSegment) // since availableTimeSegments is in ascending order, the first time segment that is larger than the current time segment is chosen
-    {
-      return availableTimeSegments[i];
-    }
-  }
-  return availableTimeSegments[0]; //If the next time slot is after the passing of the hour, return the first segment in the hour.
-}
-bool shortPSM()
-{
-  int previousEnergy, currentEnergy;
-  int sleepDuration;
-  currentEnergy = checkEnergy();
-  if (currentEnergy < threshold_SPSM)
-  {
-    sleepDuration = 300000;
-    LowPower.deepSleep(sleepDuration); //sleep for 5 minutes
-    previousEnergy = currentEnergy;
-    currentEnergy = checkEnergy();
-
-    while (currentEnergy < threshold_SPSM)
-    {
-      float slope;
-      slope = (currentEnergy - previousEnergy) / sleepDuration;
-      sleepDuration = (threshold_SPSM - currentEnergy) / slope;
-      if (sleepDuration < (minute)) // if calculated sleepduration is shorter than a minute, sleep for a minute
-      {
-        sleepDuration = minute;
-      }
-      else if (sleepDuration > 15 * minute) // if calculated sleepduration is larger than 15 minutes, sleep for 15 minutes
-      {
-        sleepDuration = 15 * minute;
-      }
-
-      LowPower.deepSleep(sleepDuration);
-      previousEnergy = currentEnergy;
-      currentEnergy = checkEnergy();
-    }
-    int currentHours = rtc.getHours();
-    int currentMinutes = rtc.getMinutes();
-    int currentTimeSegment = currentMinutes / 5;
-    int nextTimeSegment = nextTimeSeg(currentTimeSegment, 12);
-    int nextHours = currentHours;
-    int nextMinutes = nextTimeSegment * 5 + tsMinutes;
-    rtc.setAlarmTime(nextHours, nextMinutes, tsSeconds, tsMilli);
-    LowPower.deepSleep();
-    return 0;
-  }
-  return 1;
-}
-
 String padLeft(String input, uint16_t desiredLength)
 {
 
@@ -257,6 +165,32 @@ String padLeft(String input, uint16_t desiredLength)
     input = "0" + input;
   }
   return input;
+}
+
+void tempMeasurement()
+{
+  Wire.setClock(100000);
+  Wire.setSDA(PA_10);
+  Wire.setSCL(PA_9);
+  Wire.begin();
+  for (int i = 0; i < sensorCount; i++)
+  {
+    Wire.beginTransmission(0x44 + i); // transmit to device
+    Wire.write(0x1);                  // select configuration register
+    Wire.write(0b11000000);           //set configuration registers (select one-shot mode)
+    Wire.write(0b10000000);
+
+    Wire.beginTransmission(0x44 + i); // select tvalue register
+    Wire.write(0x0);
+
+    Wire.beginTransmission(0x44 + i);
+    int16_t MSB = Wire.read() * 256;
+    int16_t LSB = Wire.read();
+    int16_t value = MSB + LSB;
+    temperature[i] = value / 12.8; //due to roundoff error of +-0.2
+  }
+  Wire.endTransmission(); // stop transmitting
+  return;
 }
 
 bool transmitOffSeason(int energyLevel, int **temperatureArray)
@@ -304,69 +238,12 @@ bool transmit(int energyLevel, int *temperature)
   return receive();
 }
 
-void tempMeasurement()
+int closestPeriod()
 {
-  Wire.setClock(100000);
-  Wire.setSDA(PA_10);
-  Wire.setSCL(PA_9);
-  Wire.begin();
-  for (int i = 0; i < sensorCount; i++)
-  {
-    Wire.beginTransmission(0x44 + i); // transmit to device
-    Wire.write(0x1);                  // select configuration register
-    Wire.write(0b11000000);           //set configuration registers (select one-shot mode)
-    Wire.write(0b10000000);
-
-    Wire.beginTransmission(0x44 + i); // select tvalue register
-    Wire.write(0x0);
-
-    Wire.beginTransmission(0x44 + i);
-    int16_t MSB = Wire.read() * 256;
-    int16_t LSB = Wire.read();
-    int16_t value = MSB + LSB;
-    temperature[i] = value / 12.8; //due to roundoff error of +-0.2
-  }
-  Wire.endTransmission(); // stop transmitting
-  return;
-}
-
-void offSeasonState()
-{
-  int *tempArray[5];
-
-  for (size_t i = 0; i < offSeasonIterations; i++)
-  {
-    LowPower.deepSleep(offSeasonSleepDuration);
-    tempMeasurement();
-    tempArray[i] = temperature;
-  }
-
-  if (transmitOffSeason(checkEnergy(), tempArray) == 0)
-  {
-    joined = 0;
-    while (joined == 0)
-    {
-      if (checkEnergy() > threshold_Join)
-      {
-        LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
-        joined = join();
-      }
-      else
-      {
-        LowPower.deepSleep(5 * minutes);
-      }
-    }
-  }
-
-  return;
-}
-
-int closestFrequency()
-{
-  int minTimeToNext = (min_func(temperature) - criticalTemp) / maxTempSlope;
-  int availablePeriods[6] = {60, 30, 20, 15, 10, 5};
+  int minTimeToNext = (minFunc(temperature) - criticalTemp) / maxTempSlope;
+  int availablePeriods[5] = {30, 20, 15, 10, 5};
   int minPeriod = 5;
-  for (size_t i = 0; i < 6; i++)
+  for (size_t i = 0; i < 5; i++)
   {
     if (availablePeriods[i] < minTimeToNext)
     {
@@ -377,7 +254,97 @@ int closestFrequency()
   return minPeriod;
 }
 
+int nextTimeSeg(int currentTimeSegment, int measurementPeriod) // Calculate the next time segment a device should measure.
+{
+  int availableTimeSegments[60 / measurementPeriod];
+  int setAmount = measurementPeriod / 5;
+  for (size_t i = 0; i < 12; i++) //make a list of all timesegments that belong to the group in this mode. Time segments from 0-11 and groups from 0-11 as well
+  {
+    if (i * measurementPeriod / 5 + (groupNumber % setAmount) < 12)
+    {
+      availableTimeSegments[i] = i * measurementPeriod / 5 + (groupNumber % setAmount); //put timesegment in array if lower than 12
+    }
+    else
+    {
+      break; // stop earlier if subsequent timeslots will be higher or equal to 12
+    }
+  }
 
+  for (int i = 0; i < 60 / measurementPeriod; i++) // determine what timesegment comes next
+  {
+    if (availableTimeSegments[i] > currentTimeSegment) // since availableTimeSegments is in ascending order, the first time segment that is larger than the current time segment is chosen
+    {
+      return availableTimeSegments[i];
+    }
+  }
+  return availableTimeSegments[0]; //If the next time slot is after the passing of the hour, return the first segment in the hour.
+}
+
+void setup()
+{
+  joined = 0;
+  LowPower.enableWakeupFrom(&UARTInterface, NULL);
+  rtc.setClockSource(STM32RTC::LSE_CLOCK);
+  rtc.begin(24);            //Set time format to 24h time format
+  analogReadResolution(12); // Set ADC accuracy to 12 bits
+  LowPower.begin();         //Initialize low power functionalities
+  randomSeed(analogRead(PA_4)); // use random unconnected pin to get random value
+  while (joined == 0)       //try to join as long as it has not joined yet
+  {
+    if (checkEnergy() > threshold_Join)
+    {
+      LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
+      joined = join();                                   //join the LoRa network
+    }
+    else
+    {
+      LowPower.deepSleep(5 * minute);
+    }
+  }
+}
+
+bool powerSavingMode()
+{
+  int previousEnergy, currentEnergy;
+  int sleepDuration;
+  currentEnergy = checkEnergy();
+  if (currentEnergy < threshold_PSM)
+  {
+    sleepDuration = 5 * minute;
+    LowPower.deepSleep(sleepDuration); //sleep for 5 minutes
+    previousEnergy = currentEnergy;
+    currentEnergy = checkEnergy();
+
+    while (currentEnergy < threshold_PSM)
+    {
+      float slope;
+      slope = (currentEnergy - previousEnergy) / sleepDuration;
+      sleepDuration = (threshold_PSM - currentEnergy) / slope;
+      if (sleepDuration < (minute)) // if calculated sleepduration is shorter than a minute, sleep for a minute
+      {
+        sleepDuration = minute;
+      }
+      else if (sleepDuration > 15 * minute) // if calculated sleepduration is larger than 15 minutes, sleep for 15 minutes
+      {
+        sleepDuration = 15 * minute;
+      }
+
+      LowPower.deepSleep(sleepDuration);
+      previousEnergy = currentEnergy;
+      currentEnergy = checkEnergy();
+    }
+    int currentHours = rtc.getHours();
+    int currentMinutes = rtc.getMinutes();
+    int currentTimeSegment = currentMinutes / 5;
+    int nextTimeSegment = nextTimeSeg(currentTimeSegment, 12);
+    int nextHours = currentHours;
+    int nextMinutes = nextTimeSegment * 5 + tsMinutes;
+    rtc.setAlarmTime(nextHours, nextMinutes, tsSeconds, tsMilli);
+    LowPower.deepSleep();
+    return 0;
+  }
+  return 1;
+}
 
 void normalMode()
 {
@@ -385,32 +352,28 @@ void normalMode()
   int measurementPeriodTemp;
   int measurementPeriod;
   int energyLevel = checkEnergy();
-  if (energyLevel < 144 * energyUnit)
+  if (energyLevel >= 144)
   {
     measurementPeriodEL = 5;
   }
-  else if (energyLevel < 72 * energyUnit)
+  else if (energyLevel < 144)
   {
     measurementPeriodEL = 10;
   }
-  else if (energyLevel < 48 * energyUnit)
+  else if (energyLevel < 72)
   {
     measurementPeriodEL = 15;
   }
-  else if (energyLevel < 36 * energyUnit)
+  else if (energyLevel < 48)
   {
     measurementPeriodEL = 20;
   }
-  else if (energyLevel < 24 * energyUnit)
+  else if (energyLevel < 36)
   {
     measurementPeriodEL = 30;
   }
-  else if (energyLevel < 12 * energyUnit)
-  {
-    measurementPeriodEL = 60;
-  }
   tempMeasurement();
-  measurementPeriodTemp = closestFrequency(); //calculate the minimum amount of groups needed for correct temperature measurement time interval
+  measurementPeriodTemp = closestPeriod(); //calculate the minimum amount of groups needed for correct temperature measurement time interval
   measurementPeriod = max(measurementPeriodEL, measurementPeriodTemp);
   ///////////////////////////////////////////////////////
   //CALCULATE THE NEXT TRANSMISSION TIME/////////////////
@@ -420,47 +383,104 @@ void normalMode()
   int currentTimeSegment = currentMinutes / 5;
   int nextTimeSegment = nextTimeSeg(currentTimeSegment, measurementPeriod);
   int nextHours = currentHours;
-  //if (nextTimeSegment >= 12) // dit hoeft niet meer vgm
-  //{
-  //  nextHours = (currentHours + 1) % 24;
-  //  nextTimeSegment = nextTimeSegment % 12;
-  //}
   int nextMinutes = nextTimeSegment * 5 + tsMinutes;
 
-  //transceive meuk
-  if (transmit(energyLevel, temperature) == 0)
+  int transmitted = transmit(checkEnergy(), temperature);
+  if (transmitted == 0)
   {
-    joined = 0;
-    while (joined == 0)
+    for (size_t i = 0; i < 3; i++)
     {
-      if (checkEnergy() > threshold_Join)
+      LowPower.deepSleep(int(random(1, 5)) * 5 * minute);
+      transmitted = transmit(checkEnergy(), temperature);
+      if (transmitted == 1)
       {
-        LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
-        joined = join();
-      }
-      else
-      {
-        LowPower.deepSleep(5 * minutes);
+        //calculate next time segment
+        currentHours = rtc.getHours();
+        currentMinutes = rtc.getMinutes();
+        currentTimeSegment = currentMinutes / 5;
+        nextTimeSegment = nextTimeSeg(currentTimeSegment, measurementPeriod);
+        nextHours = currentHours;
+        nextMinutes = nextTimeSegment * 5 + tsMinutes;
+        return;
       }
     }
   }
+
+  int synced = 0;
+  while (synced == 0)
+  {
+    if (checkEnergy() > threshold_Join)
+    {
+      LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
+      synced = request();
+
+      //calculate next time segment using new time slot.
+      currentHours = rtc.getHours();
+      currentMinutes = rtc.getMinutes();
+      currentTimeSegment = currentMinutes / 5;
+      nextTimeSegment = nextTimeSeg(currentTimeSegment, measurementPeriod);
+      nextHours = currentHours;
+      nextMinutes = nextTimeSegment * 5 + tsMinutes;
+    }
+    else
+    {
+      LowPower.deepSleep(5 * minute);
+    }
+  }
+  //
   rtc.setAlarmTime(nextHours, nextMinutes, tsSeconds, tsMilli);
   LowPower.deepSleep();
   return;
 }
 
-void longPSM()
+void offSeasonMode()
 {
-  LowPower.deepSleep(60 * minute);
+  int *tempArray[5];
+
+  for (size_t i = 0; i < offSeasonIterations; i++)
+  {
+    LowPower.deepSleep(offSeasonSleepDuration);
+    tempMeasurement();
+    tempArray[i] = temperature;
+  }
+  // Attempt to retransmit for a maximum of 3 times.
+  int transmitted = transmitOffSeason(checkEnergy(), tempArray);
+  if (transmitted == 0)
+  {
+    for (size_t i = 0; i < 3; i++)
+    {
+      LowPower.deepSleep(int(random(1, 5)) * 5 * minute);
+      transmitted = transmitOffSeason(checkEnergy(), tempArray);
+      if (transmitted == 1)
+      {
+        return;
+      }
+    }
+  }
+  // Attempt to rejoin network
+  int synced = 0;
+  while (synced == 0)
+  {
+    if (checkEnergy() > threshold_Join)
+    {
+      LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
+      synced = request();
+    }
+    else
+    {
+      LowPower.deepSleep(5 * minute);
+    }
+  }
+  return;
 }
 
 void loop()
 {
-  if (shortPSM())
+  if (powerSavingMode())
   {
     if (offSeason == 1)
     {
-      offSeasonState();
+      offSeasonMode();
     }
     else
     {
