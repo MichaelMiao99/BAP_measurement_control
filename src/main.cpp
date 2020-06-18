@@ -18,6 +18,8 @@ const int offSeasonIterations = 4;
 const int offSeasonSleepDuration = 60 * minute;
 //const int timeUntilReceive = 3000;
 const int groupNumber = 1;
+const int syncThresholdNormal = 20;
+const int syncThresholdOffSeason = 5;
 
 const char deviceID[9] = "";
 const char spreadingFactor[5] = "";
@@ -32,14 +34,16 @@ bool joined;
 int tsMilli;
 int tsSeconds;
 int tsMinutes;
-
+int syncCounter = 0;
 const float maxTempSlope = (10.0 * maximumTemperatureSlope) / 60; //10th degrees per minute
 
 HardwareSerial UARTInterface(PB_7, PB_6);
 
 int checkEnergy()
 {
-  float capVoltage = analogRead(PA_1); //read voltage from io pin
+  analogWrite(PA_1, HIGH);
+  delay(4);
+  float capVoltage = analogRead(PA_2); //read voltage from io pin
   capVoltage = map(capVoltage, 0, 4095, 0, 1.7);
   //Calculate energy from capvoltage
   float availableEnergy = 0.5 * 15 * sq(capVoltage);
@@ -107,7 +111,7 @@ bool join()
   UARTInterface.write(0x55);
 
   //setup lora module over uart
-  char setDeveui[24]; 
+  char setDeveui[24];
   char setSF[18];
   char setNwks[49];
   char setApps[49];
@@ -119,7 +123,7 @@ bool join()
 
   strcpy(setSF, "radio set sf ");
   strcat(setSF, spreadingFactor);
-  UARTInterface.write(setSF); 
+  UARTInterface.write(setSF);
   UARTInterface.readString();
 
   strcpy(setNwks, "mac set nwkskey ");
@@ -285,11 +289,11 @@ void setup()
   joined = 0;
   LowPower.enableWakeupFrom(&UARTInterface, NULL);
   rtc.setClockSource(STM32RTC::LSE_CLOCK);
-  rtc.begin(24);            //Set time format to 24h time format
-  analogReadResolution(12); // Set ADC accuracy to 12 bits
-  LowPower.begin();         //Initialize low power functionalities
+  rtc.begin(24);                //Set time format to 24h time format
+  analogReadResolution(12);     // Set ADC accuracy to 12 bits
+  LowPower.begin();             //Initialize low power functionalities
   randomSeed(analogRead(PA_4)); // use random unconnected pin to get random value
-  while (joined == 0)       //try to join as long as it has not joined yet
+  while (joined == 0)           //try to join as long as it has not joined yet
   {
     if (checkEnergy() > threshold_Join)
     {
@@ -388,46 +392,37 @@ void normalMode()
   int transmitted = transmit(checkEnergy(), temperature);
   if (transmitted == 0)
   {
-    for (size_t i = 0; i < 3; i++)
+    syncCounter += 1;
+    if (syncCounter = syncThresholdNormal)
     {
-      LowPower.deepSleep(int(random(1, 5)) * 5 * minute);
-      transmitted = transmit(checkEnergy(), temperature);
-      if (transmitted == 1)
+      int synced = 0;
+      while (synced == 0)
       {
-        //calculate next time segment
-        currentHours = rtc.getHours();
-        currentMinutes = rtc.getMinutes();
-        currentTimeSegment = currentMinutes / 5;
-        nextTimeSegment = nextTimeSeg(currentTimeSegment, measurementPeriod);
-        nextHours = currentHours;
-        nextMinutes = nextTimeSegment * 5 + tsMinutes;
-        return;
+        if (checkEnergy() > threshold_Join)
+        {
+          LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
+          synced = request();
+
+          //calculate next time segment using new time slot.
+          currentHours = rtc.getHours();
+          currentMinutes = rtc.getMinutes();
+          currentTimeSegment = currentMinutes / 5;
+          nextTimeSegment = nextTimeSeg(currentTimeSegment, measurementPeriod);
+          nextHours = currentHours;
+          nextMinutes = nextTimeSegment * 5 + tsMinutes;
+        }
+        else
+        {
+          LowPower.deepSleep(5 * minute);
+        }
       }
     }
   }
-
-  int synced = 0;
-  while (synced == 0)
+  else
   {
-    if (checkEnergy() > threshold_Join)
-    {
-      LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
-      synced = request();
-
-      //calculate next time segment using new time slot.
-      currentHours = rtc.getHours();
-      currentMinutes = rtc.getMinutes();
-      currentTimeSegment = currentMinutes / 5;
-      nextTimeSegment = nextTimeSeg(currentTimeSegment, measurementPeriod);
-      nextHours = currentHours;
-      nextMinutes = nextTimeSegment * 5 + tsMinutes;
-    }
-    else
-    {
-      LowPower.deepSleep(5 * minute);
-    }
+    syncCounter = 0;
   }
-  //
+  
   rtc.setAlarmTime(nextHours, nextMinutes, tsSeconds, tsMilli);
   LowPower.deepSleep();
   return;
@@ -447,30 +442,38 @@ void offSeasonMode()
   int transmitted = transmitOffSeason(checkEnergy(), tempArray);
   if (transmitted == 0)
   {
-    for (size_t i = 0; i < 3; i++)
+    syncCounter += 1;
+    if (syncCounter = syncThresholdOffseasonl)
     {
-      LowPower.deepSleep(int(random(1, 5)) * 5 * minute);
-      transmitted = transmitOffSeason(checkEnergy(), tempArray);
-      if (transmitted == 1)
+      int synced = 0;
+      while (synced == 0)
       {
-        return;
+        if (checkEnergy() > threshold_Join)
+        {
+          LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
+          synced = request();
+
+          //calculate next time segment using new time slot.
+          currentHours = rtc.getHours();
+          currentMinutes = rtc.getMinutes();
+          currentTimeSegment = currentMinutes / 5;
+          nextTimeSegment = nextTimeSeg(currentTimeSegment, measurementPeriod);
+          nextHours = currentHours;
+          nextMinutes = nextTimeSegment * 5 + tsMinutes;
+        }
+        else
+        {
+          LowPower.deepSleep(5 * minute);
+        }
       }
     }
   }
-  // Attempt to rejoin network
-  int synced = 0;
-  while (synced == 0)
+  else
   {
-    if (checkEnergy() > threshold_Join)
-    {
-      LowPower.deepSleep(int(random(1000, 5 * minute))); //sleep for a random time before trying to rejoin.
-      synced = request();
-    }
-    else
-    {
-      LowPower.deepSleep(5 * minute);
-    }
+    syncCounter = 0;
   }
+  rtc.setAlarmTime(nextHours, nextMinutes, tsSeconds, tsMilli);
+  LowPower.deepSleep();
   return;
 }
 
