@@ -360,19 +360,19 @@ void normalMode()
   {
     measurementPeriodEL = 5;
   }
-  else if (energyLevel < 144)
+  if (energyLevel < 144)
   {
     measurementPeriodEL = 10;
   }
-  else if (energyLevel < 72)
+  if (energyLevel < 72)
   {
     measurementPeriodEL = 15;
   }
-  else if (energyLevel < 48)
+  if (energyLevel < 48)
   {
     measurementPeriodEL = 20;
   }
-  else if (energyLevel < 36)
+  if (energyLevel < 36)
   {
     measurementPeriodEL = 30;
   }
@@ -393,7 +393,7 @@ void normalMode()
   if (transmitted == 0)
   {
     syncCounter += 1;
-    if (syncCounter = syncThresholdNormal)
+    if (syncCounter == syncThresholdNormal)
     {
       int synced = 0;
       while (synced == 0)
@@ -422,7 +422,7 @@ void normalMode()
   {
     syncCounter = 0;
   }
-  
+
   rtc.setAlarmTime(nextHours, nextMinutes, tsSeconds, tsMilli);
   LowPower.deepSleep();
   return;
@@ -443,7 +443,7 @@ void offSeasonMode()
   if (transmitted == 0)
   {
     syncCounter += 1;
-    if (syncCounter = syncThresholdOffseasonl)
+    if (syncCounter == syncThresholdOffSeason)
     {
       int synced = 0;
       while (synced == 0)
@@ -454,12 +454,6 @@ void offSeasonMode()
           synced = request();
 
           //calculate next time segment using new time slot.
-          currentHours = rtc.getHours();
-          currentMinutes = rtc.getMinutes();
-          currentTimeSegment = currentMinutes / 5;
-          nextTimeSegment = nextTimeSeg(currentTimeSegment, measurementPeriod);
-          nextHours = currentHours;
-          nextMinutes = nextTimeSegment * 5 + tsMinutes;
         }
         else
         {
@@ -472,6 +466,12 @@ void offSeasonMode()
   {
     syncCounter = 0;
   }
+  int currentHours = rtc.getHours();
+  int currentMinutes = rtc.getMinutes();
+  int currentTimeSegment = currentMinutes / 5;
+  int nextTimeSegment = nextTimeSeg(currentTimeSegment, 60);
+  int nextHours = currentHours;
+  int nextMinutes = nextTimeSegment * 5 + tsMinutes;
   rtc.setAlarmTime(nextHours, nextMinutes, tsSeconds, tsMilli);
   LowPower.deepSleep();
   return;
